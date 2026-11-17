@@ -6,6 +6,10 @@ WebServer server(80);
 DNSServer dnsServer;
 const byte DNS_PORT = 53;
 
+// Powerbank'in kapanmaması için daha sık ve agresif darbe süresi (4 saniye)
+unsigned long lastKeepAlive = 0;
+const unsigned long KEEP_ALIVE_INTERVAL = 4000; 
+
 // Captive Portal için Rickroll Web Sayfası
 const char RICKROLL_PAGE[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
@@ -74,8 +78,6 @@ const char RICKROLL_PAGE[] PROGMEM = R"rawliteral(
             }
             const ctx = new AudioContext();
 
-            // Never Gonna Give You Up - Giriş Melodisi Notaları (Frekans ve Süre)
-            // D, E, G, E, B, B, A ...
             const notes = [
                 {f: 293.66, d: 200}, // D4
                 {f: 329.63, d: 200}, // E4
@@ -99,7 +101,7 @@ const char RICKROLL_PAGE[] PROGMEM = R"rawliteral(
                 let osc = ctx.createOscillator();
                 let gain = ctx.createGain();
 
-                osc.type = 'square'; // Klasik 8-bit / dijital tat
+                osc.type = 'square';
                 osc.frequency.setValueAtTime(note.f, time);
 
                 gain.gain.setValueAtTime(0.1, time);
@@ -111,7 +113,7 @@ const char RICKROLL_PAGE[] PROGMEM = R"rawliteral(
                 osc.start(time);
                 osc.stop(time + (note.d / 1000));
 
-                time += note.d / 1000 + 0.05; // Nota arası minik boşluk
+                time += note.d / 1000 + 0.05;
             });
         }
     </script>
@@ -155,6 +157,22 @@ const char* morseNumbers[] = {
   "-----", ".----", "..---", "...--", "....-", // 0-4
   ".....", "-....", "--...", "---..", "----."  // 5-9
 };
+
+bool apActive = false;
+
+// Powerbank'in uykuya geçmesini önleyen sürekli aktif Wi-Fi döngüsü
+void keepPowerbankAlive() {
+  if (apActive) return; // Beacon modu açıkken zaten AP aktif, gerek yok
+  
+  if (millis() - lastKeepAlive >= KEEP_ALIVE_INTERVAL) {
+    lastKeepAlive = millis();
+    WiFi.mode(WIFI_STA);
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
+    WiFi.scanNetworks(true); // Arka planda hızlı tarama tetikle
+    delay(250);              // Güç çekimini kararlı kılmak için kısa bekleme
+    WiFi.scanDelete();
+  }
+}
 
 void setLed(bool on) {
   if (LED_INVERTED) digitalWrite(LED_PIN, on ? LOW : HIGH);
@@ -220,6 +238,7 @@ void runStopwatch() {
   
   unsigned long start = millis();
   while (digitalRead(BTN_PIN) == HIGH) {
+    keepPowerbankAlive();
     delay(10);
   }
   while (digitalRead(BTN_PIN) == LOW) delay(10);
@@ -263,7 +282,6 @@ void runDice() {
   sendMorseText(String(roll));
 }
 
-bool apActive = false;
 void toggleWifiBeacon() {
   if (!apActive) {
     WiFi.mode(WIFI_AP);
@@ -332,15 +350,20 @@ void runMorseTrainer() {
 }
 
 void setup() {
+  setCpuFrequencyMhz(160); // İşlemciyi tam performans çalıştır
   Serial.begin(115200);
   pinMode(LED_PIN, OUTPUT);
   pinMode(BTN_PIN, INPUT_PULLUP);
   setLed(false);
   randomSeed(analogRead(0));
   
+  // Başlangıçta Wi-Fi'ı STA moduna alıp hazırda tutalım
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  
   delay(1500);
   Serial.println("\n=========================================");
-  Serial.println("       MorsOS (Ekransiz M5Stick) Hazir!   ");
+  Serial.println("    MorsOS (Agresif Powerbank Korumali)  ");
   Serial.println("=========================================");
   
   sendMorseText("OK");
@@ -351,6 +374,8 @@ void setup() {
 }
 
 void loop() {
+  keepPowerbankAlive(); // Her 4 saniyede bir powerbank'i tetikle
+
   if (apActive) {
     dnsServer.processNextRequest();
     server.handleClient();
@@ -375,7 +400,6 @@ void loop() {
     else if (currentMode == 3) toggleWifiBeacon();
     else if (currentMode == 4) runMorseTrainer();
     
-    // Eğer beacon modu açıksa döngüde server çalışmaya devam etmeli, kapandıysa menüye dön
     if (!apActive) {
       delay(500);
       Serial.print("\nMenuye Donuldu. Aktif Mod: ");
